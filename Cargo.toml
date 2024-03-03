@@ -1,0 +1,23 @@
+[package]
+name = "pow20miner"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rayon = "=1.8.0"
+bitcoin = { version = "=0.31.1", features = ["rand"] }
+sha2 = "=0.10.6"
+rand = { version = "0.8.5", features = ["small_rng"] }
+clap = { version = "=4.4.18", features = ["derive"] }
+hex = "*"
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11.23", features = ["json", "stream"], default-features = false }
+anyhow = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "*"
+
+[provider.dev]
+opt-level = 3
+overflow-checks = false
