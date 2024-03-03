@@ -73,25 +73,32 @@ async fn main() -> Result<()> {
     loop {
         let start_time = Instant::now();
 
+        let challenge_bytes = hex::decode(&current_challenge).unwrap();
+
         let results = bucket
             .par_iter()
             .map(|_| {
                 let data = rand::thread_rng().gen::<[u8; 4]>();
-                let n = hex::encode(data);
 
-                let challenge = hex::decode(format!("{}{}", current_challenge, n)).unwrap();
-                let solution = Hash::sha256d(challenge.clone());
+                let mut preimage = [0_u8; 1024];
+                preimage[..challenge_bytes.len()].copy_from_slice(&challenge_bytes);
+                preimage[challenge_bytes.len()..challenge_bytes.len() + 4].copy_from_slice(&data);
 
-                if solution.starts_with(&current_difficulty) {
-                    return Some(Solution {
-                        nonce: n,
-                        hash: solution,
-                        location: token.current_location.clone(),
-                        token_id: token.id.clone(),
-                    });
+                let solution = Hash::sha256d(&preimage[..challenge_bytes.len() + 4]);
+
+                for i in 0..token.difficulty {
+                    let rshift = (1 - (i % 2)) << 2;
+                    if (solution[(i / 2) as usize] >> rshift) & 0x0f != 0 {
+                        return None;
+                    }
                 }
 
-                return None;
+                return Some(Solution {
+                    nonce: hex::encode(data),
+                    hash: hex::encode(solution),
+                    location: token.current_location.clone(),
+                    token_id: token.id.clone(),
+                });
             })
             .filter_map(|e| match e {
                 Some(e) => Some(e),
