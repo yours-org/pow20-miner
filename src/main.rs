@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
     );
 
     let mut nonce: u16 = 1;
-    let bucket = vec![0; 8_000_000];
+    let bucket = (0..8_000_000).collect::<Vec<u32>>();
 
     loop {
         let start_time = Instant::now();
@@ -77,14 +77,18 @@ async fn main() -> Result<()> {
 
         let results = bucket
             .par_iter()
-            .map(|_| {
-                let data = rand::thread_rng().gen::<[u8; 4]>();
+            .map(|prefix| {
+                let random = rand::thread_rng().gen::<[u8; 4]>();
+
+                let mut data = [0; 8];
+                data[..4].copy_from_slice(&prefix.to_le_bytes());
+                data[4..].copy_from_slice(&random);
 
                 let mut preimage = [0_u8; 64];
                 preimage[..challenge_bytes.len()].copy_from_slice(&challenge_bytes);
-                preimage[challenge_bytes.len()..challenge_bytes.len() + 4].copy_from_slice(&data);
+                preimage[challenge_bytes.len()..challenge_bytes.len() + 8].copy_from_slice(&data);
 
-                let solution = Hash::sha256d(&preimage[..challenge_bytes.len() + 4]);
+                let solution = Hash::sha256d(&preimage[..challenge_bytes.len() + 8]);
 
                 for i in 0..token.difficulty {
                     let rshift = (1 - (i % 2)) << 2;
