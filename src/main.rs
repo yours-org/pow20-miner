@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
             .map(|_| {
                 let data = rand::thread_rng().gen::<[u8; 4]>();
 
-                let mut preimage = [0_u8; 1024];
+                let mut preimage = [0_u8; 64];
                 preimage[..challenge_bytes.len()].copy_from_slice(&challenge_bytes);
                 preimage[challenge_bytes.len()..challenge_bytes.len() + 4].copy_from_slice(&data);
 
