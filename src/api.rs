@@ -1,4 +1,6 @@
 use super::*;
+use std::path::Path;
+use config::Config;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Ticker {
@@ -61,7 +63,8 @@ impl ApiClient {
         Ok((status_code, text))
     }
 
-    pub async fn fetch_ticker(&self, slug: &String) -> Result<Ticker> {
+    
+    pub async fn fetch_ticker_api(&self, slug: &String) -> Result<Ticker> {
         let res = self
             .get(format!("/token/search?ticker={}", slug))
             .send()
@@ -72,5 +75,18 @@ impl ApiClient {
         let ticker: Ticker = serde_json::from_value(res)?;
 
         Ok(ticker)
+    }
+    
+    pub async fn fetch_ticker(&self, slug: &String) -> Result<Ticker> {
+        // allow forcing a token using a config.json file
+        // (for ex to force start even if API is down at the moment)
+        let mut config = Config::default();
+        config.merge(config::File::from(Path::new("config.json"))).ok();
+
+        let ticker_config = match config.get::<Ticker>("ticker") {
+            Ok(ticker_config) => ticker_config,
+            Err(_) => self.fetch_ticker_api(slug).await?,
+        };
+        Ok(ticker_config)
     }
 }
