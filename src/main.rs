@@ -47,13 +47,6 @@ pub struct Context {
     args: Args,
 }
 
-pub async fn start_work(ctx: &Context) -> () {
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000 * 10)).await;
-        update_work(ctx).await;
-    }
-}
-
 pub async fn update_work(ctx: &Context) -> () {
     let mut lock = ctx.work.lock().await;
 
@@ -149,7 +142,10 @@ async fn main() -> Result<()> {
 
     let cloned = ctx.clone();
     tokio::spawn(async move {
-        start_work(&cloned).await;
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000 * 10)).await;
+            update_work(&cloned).await;
+        }
     });
 
     let mut nonce: u16 = 1;
