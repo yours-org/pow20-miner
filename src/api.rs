@@ -10,7 +10,7 @@ pub struct Ticker {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ApiClient {
     pub url: String,
     pub address: String,
@@ -46,8 +46,6 @@ impl ApiClient {
             "tokenId": solution.token_id,
             "winningHash": solution.hash
         });
-
-        println!("submit share: {:#?}", payload);
 
         let res = self
             .post(format!("/mint/save"))

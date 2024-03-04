@@ -4,7 +4,8 @@ use rand::Rng;
 use rayon::prelude::*;
 use serde::*;
 use serde_json::*;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
+use tokio::sync::Mutex;
 
 mod api;
 pub use api::*;
@@ -13,6 +14,7 @@ pub use hash::*;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+#[derive(Clone)]
 struct Args {
     #[arg(short, long)]
     tick: String,
@@ -26,9 +28,87 @@ pub struct Solution {
     pub hash: String,
     pub location: String,
     pub token_id: String,
+    pub challenge: Vec<u8>,
+}
+
+#[derive(Clone, Default)]
+pub struct Stats {
+    pub accepted: i64,
+    pub rejected: i64,
 }
 
 type Address = bitcoin::Address<bitcoin::address::NetworkUnchecked>;
+
+#[derive(Clone)]
+pub struct Context {
+    work: Arc<Mutex<Ticker>>,
+    stats: Arc<Mutex<Stats>>,
+    api_client: ApiClient,
+    args: Args,
+}
+
+pub async fn start_work(ctx: &Context) -> () {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000 * 10)).await;
+        update_work(ctx).await;
+    }
+}
+
+pub async fn update_work(ctx: &Context) -> () {
+    let mut lock = ctx.work.lock().await;
+
+    if let Ok(new_work) = ctx.api_client.fetch_ticker(&ctx.args.tick).await {
+        if lock.challenge != new_work.challenge {
+            *lock = new_work;
+            println!(
+                "new job! ticker: {:?} difficulty: {:?}",
+                lock.ticker, lock.difficulty,
+            );
+        }
+    }
+    drop(lock);
+}
+
+pub async fn submit_work(solution: &Solution, ctx: &Context) -> () {
+    let submit_res = ctx.api_client.submit_share(solution).await;
+
+    println!(
+        "[{}] found solution! submitting... submit solution\n\tnonce: {:?}\n\thash: {:?}\n\tlocation: {:?}\n\tchallenge: {:?}",
+        hex::encode(&solution.challenge[0..4]),
+        solution.nonce,
+        solution.hash,
+        solution.location,
+        hex::encode(&solution.challenge)
+    );
+
+    if let Ok((status_code, response)) = &submit_res {
+        let mut stats_lock = ctx.stats.lock().await;
+
+        if status_code.clone() == 201 {
+            stats_lock.accepted = stats_lock.accepted + 1;
+            println!(
+                "[{}] ✅ accepted share",
+                hex::encode(&solution.challenge[0..4])
+            )
+        } else {
+            stats_lock.rejected = stats_lock.rejected + 1;
+
+            println!(
+                "[{}] ❌ rejected share {:?}",
+                hex::encode(&solution.challenge[0..4]),
+                response
+            )
+        }
+
+        drop(stats_lock)
+    }
+
+    if let Err(r) = submit_res {
+        println!("❌ reject share: {}", r)
+    }
+
+    update_work(ctx).await;
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -44,7 +124,7 @@ async fn main() -> Result<()> {
         address: args.address.to_string(),
     };
 
-    let mut token = match api_client.fetch_ticker(&args.tick).await {
+    let token = match api_client.fetch_ticker(&args.tick).await {
         Ok(v) => v,
         Err(e) => {
             println!("failed to fetch tick: {:?}", args.tick);
@@ -53,19 +133,24 @@ async fn main() -> Result<()> {
         }
     };
 
-    let mut current_difficulty = vec![0; token.difficulty as usize]
-        .iter()
-        .map(|_| "0")
-        .collect::<String>();
+    let work = Arc::new(Mutex::new(token.clone()));
 
-    let mut token_challenge = hex::decode(token.challenge.clone()).unwrap();
-    token_challenge.reverse();
-    let mut current_challenge = hex::encode(token_challenge);
+    let ctx = Context {
+        work,
+        stats: Arc::new(Mutex::new(Stats::default())),
+        api_client: api_client.clone(),
+        args: args.clone(),
+    };
 
     println!(
-        "new job! ticker: {:?} difficulty: {:?} challenge: {:?}",
-        token.ticker, current_difficulty, current_challenge
+        "new job! ticker: {:?} difficulty: {:?}",
+        token.ticker, token.difficulty
     );
+
+    let cloned = ctx.clone();
+    tokio::spawn(async move {
+        start_work(&cloned).await;
+    });
 
     let mut nonce: u16 = 1;
     let bucket = (0..8_000_000).collect::<Vec<u32>>();
@@ -73,7 +158,12 @@ async fn main() -> Result<()> {
     loop {
         let start_time = Instant::now();
 
-        let challenge_bytes = hex::decode(&current_challenge).unwrap();
+        let work_lock = ctx.work.lock().await;
+        let work = work_lock.clone();
+        drop(work_lock);
+
+        let mut challenge_bytes = hex::decode(work.challenge.clone()).unwrap();
+        challenge_bytes.reverse();
 
         let results = bucket
             .par_iter()
@@ -90,7 +180,7 @@ async fn main() -> Result<()> {
 
                 let solution = Hash::sha256d(&preimage[..challenge_bytes.len() + 8]);
 
-                for i in 0..token.difficulty {
+                for i in 0..work.difficulty {
                     let rshift = (1 - (i % 2)) << 2;
                     if (solution[(i / 2) as usize] >> rshift) & 0x0f != 0 {
                         return None;
@@ -100,8 +190,9 @@ async fn main() -> Result<()> {
                 return Some(Solution {
                     nonce: hex::encode(data),
                     hash: hex::encode(solution),
-                    location: token.current_location.clone(),
-                    token_id: token.id.clone(),
+                    location: work.current_location.clone(),
+                    token_id: work.id.clone(),
+                    challenge: challenge_bytes.clone(),
                 });
             })
             .filter_map(|e| match e {
@@ -111,57 +202,24 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>();
 
         let duration = start_time.elapsed().as_millis();
+        let stats_lock = ctx.stats.lock().await;
+        let stats = stats_lock.clone();
+        drop(stats_lock);
 
         println!(
-            "{:.2} MH/s",
-            bucket.len() as f64 / 1000.0 / 100.0 / duration as f64 * 1000.0
+            "[{}] diff: {} accepted: {} rejected: {} hash: {:.2} MH/s",
+            hex::encode(&challenge_bytes[0..4]),
+            work.difficulty,
+            stats.accepted,
+            stats.rejected,
+            bucket.len() as f64 / 1000.0 / duration as f64
         );
 
-        let mut update_work = nonce % 12 == 0;
-
-        for res in &results {
-            update_work = true;
-
-            println!("found share: {:?}", res);
-            let submit_res = api_client.submit_share(res).await;
-
-            if let Ok((status_code, response)) = &submit_res {
-                if status_code.clone() == 201 {
-                    println!("✅ accepted share")
-                } else {
-                    println!("❌ rejected share: {:#?}", response)
-                }
-            }
-
-            if let Err(r) = submit_res {
-                println!("❌ reject share: {}", r)
-            }
-        }
-
-        if update_work {
-            let res = api_client.fetch_ticker(&args.tick).await;
-
-            if let Ok(t) = &res {
-                if token.challenge != t.challenge {
-                    token = t.clone();
-                    current_difficulty = vec![0; token.difficulty as usize]
-                        .iter()
-                        .map(|_| "0")
-                        .collect::<String>();
-                    let mut token_challenge = hex::decode(token.challenge.clone()).unwrap();
-                    token_challenge.reverse();
-                    current_challenge = hex::encode(token_challenge);
-                    println!(
-                        "new job! ticker: {:?} difficulty: {:?} challenge: {:?}",
-                        token.ticker, current_difficulty, current_challenge
-                    );
-                }
-            }
-
-            if let Err(e) = &res {
-                println!("failed to fetch tick: {:?}", args.tick);
-                println!("{}", e);
-            }
+        for res in results {
+            let cloned = ctx.clone();
+            tokio::spawn(async move {
+                submit_work(&res, &cloned).await;
+            });
         }
 
         nonce = nonce + 1;
