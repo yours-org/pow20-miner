@@ -68,30 +68,41 @@ async fn main() -> Result<()> {
     );
 
     let mut nonce: u16 = 1;
-    let bucket = vec![0; 8_000_000];
+    let bucket = (0..8_000_000).collect::<Vec<u32>>();
 
     loop {
         let start_time = Instant::now();
 
+        let challenge_bytes = hex::decode(&current_challenge).unwrap();
+
         let results = bucket
             .par_iter()
-            .map(|_| {
-                let data = rand::thread_rng().gen::<[u8; 4]>();
-                let n = hex::encode(data);
+            .map(|prefix| {
+                let random = rand::thread_rng().gen::<[u8; 4]>();
 
-                let challenge = hex::decode(format!("{}{}", current_challenge, n)).unwrap();
-                let solution = Hash::sha256d(challenge.clone());
+                let mut data = [0; 8];
+                data[..4].copy_from_slice(&prefix.to_le_bytes());
+                data[4..].copy_from_slice(&random);
 
-                if solution.starts_with(&current_difficulty) {
-                    return Some(Solution {
-                        nonce: n,
-                        hash: solution,
-                        location: token.current_location.clone(),
-                        token_id: token.id.clone(),
-                    });
+                let mut preimage = [0_u8; 64];
+                preimage[..challenge_bytes.len()].copy_from_slice(&challenge_bytes);
+                preimage[challenge_bytes.len()..challenge_bytes.len() + 8].copy_from_slice(&data);
+
+                let solution = Hash::sha256d(&preimage[..challenge_bytes.len() + 8]);
+
+                for i in 0..token.difficulty {
+                    let rshift = (1 - (i % 2)) << 2;
+                    if (solution[(i / 2) as usize] >> rshift) & 0x0f != 0 {
+                        return None;
+                    }
                 }
 
-                return None;
+                return Some(Solution {
+                    nonce: hex::encode(data),
+                    hash: hex::encode(solution),
+                    location: token.current_location.clone(),
+                    token_id: token.id.clone(),
+                });
             })
             .filter_map(|e| match e {
                 Some(e) => Some(e),
