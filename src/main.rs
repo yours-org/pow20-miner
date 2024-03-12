@@ -211,11 +211,8 @@ async fn main() -> Result<()> {
             bucket.len() as f64 / 1000.0 / duration as f64
         );
 
-        for res in results {
-            let cloned = ctx.clone();
-            tokio::spawn(async move {
-                submit_work(&res, &cloned).await;
-            });
+        if results.len() > 0 {
+            submit_work(&results[0], &ctx).await;
         }
 
         nonce = nonce + 1;

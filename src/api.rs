@@ -61,7 +61,7 @@ impl ApiClient {
 
     pub async fn fetch_ticker(&self, slug: &String) -> Result<Ticker> {
         let res = self
-            .get(format!("/token/search?ticker={}", slug))
+            .get(format!("/token/search/bsv?ticker={}", slug))
             .send()
             .await?
             .json::<Value>()
